@@ -138,17 +138,9 @@ std::pair<UnixSocketStatus, std::string> Api::handle_unix_command(const std::str
             "HELP\n";
         return {UnixSocketStatus::OK, help};
     } else if (action == "AUTO_TEMP") {
-        int id;
-        if (!(iss >> id)) return {UnixSocketStatus::INVALID_ARGUMENT, "Missing or invalid device ID"};
-        Device* d = devs.get_device(id);
-        if (!d) return {UnixSocketStatus::DEVICE_NOT_FOUND, ""};
         d->set_auto_mode(AUTO_TEMP);
         return {UnixSocketStatus::OK, "Device AUTO_TEMP"};
     } else if (action == "AUTO_TIMER") {
-        int id;
-        if (!(iss >> id)) return {UnixSocketStatus::INVALID_ARGUMENT, "Missing or invalid device ID"};
-        Device* d = devs.get_device(id);
-        if (!d) return {UnixSocketStatus::DEVICE_NOT_FOUND, ""};
         d->set_auto_mode(AUTO_TIMER);
         return {UnixSocketStatus::OK, "Device AUTO_TIMER"};
     }

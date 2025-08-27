@@ -45,8 +45,10 @@
 struct Message {
   uint8_t type;
   uint8_t id;
-  uint32_t seq;
+  uint8_t seq;
   int32_t data;
+  uint32_t padding;
+  uint8_t padding1;
 };
 
 struct UDP_CLIENT_DATA {
@@ -55,7 +57,7 @@ struct UDP_CLIENT_DATA {
   uint8_t buffer[UDP_BUFFER_SIZE];                // Receive buffer
   String  server_ip;                               // Server IP address
   bool    connected_to_server;                     // Connection status
-  uint32_t sequence;                               // Message sequence number
+  uint8_t sequence;                                // Message sequence number
   uint8_t device_id;                               // Device ID
 };
 
@@ -84,7 +86,7 @@ void UdpClientInit(void) {
   
   if (UdpClient.udp.begin(UDP_CLIENT_PORT)) {
     UdpClient.initialized = true;
-    AddLog(LOG_LEVEL_INFO, PSTR("UDP: Client started on port %d, Device ID: %d"), UDP_CLIENT_PORT, UdpClient.device_id);
+    AddLog(LOG_LEVEL_INFO, PSTR("UDP: New Client started on port %d, Device ID: %d"), UDP_CLIENT_PORT, UdpClient.device_id);
     
     // Start broadcasting immediately
     UdpClientSendBroadcast();
@@ -112,11 +114,11 @@ void UdpClientLoop(void) {
 
 void UdpClientHandlePacket(void) {
   int len = UdpClient.udp.read(UdpClient.buffer, UDP_BUFFER_SIZE);
+    AddLog(LOG_LEVEL_INFO, PSTR("UDP: Received %d bytes from %s:%d"), len, remoteIP.toString().c_str(), remotePort);
   if (len > 0) {
     IPAddress remoteIP = UdpClient.udp.remoteIP();
     uint16_t remotePort = UdpClient.udp.remotePort();
     
-    AddLog(LOG_LEVEL_DEBUG, PSTR("UDP: Received %d bytes from %s:%d"), len, remoteIP.toString().c_str(), remotePort);
     
     // Process message if it's the right size
     if (len >= sizeof(Message)) {
@@ -146,6 +148,8 @@ void UdpClientSendBroadcast(void) {
   msg.id = UdpClient.device_id;
   msg.seq = UdpClient.sequence++;
   msg.data = 0;
+  msg.padding = 0;
+  msg.padding1 = 0;
   
   UdpClient.udp.beginPacket(UDP_BROADCAST_IP, UDP_SERVER_PORT);
   UdpClient.udp.write((uint8_t*)&msg, sizeof(msg));
