@@ -94,37 +94,51 @@ std::pair<UnixSocketStatus, std::string> Api::handle_unix_command(const std::str
     if (action == "LIST") {
         std::ostringstream out;
         for (auto d : devs.devices) {
-            out << "ID: " << (int)d->id << ", Name: " << d->name << ", IP: " << d->ip
-                << ", State: " << code_to_str(d->dstate)
-                << ", CTemp: " << d->ctemp/100.0 << ", DTemp: " << d->dtemp/100.0 << "\n";
+            out << "ID: " << (int)d->id << ", Name: " << d->name << ", IP: " << d->ip;
+            if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+                out << ", State: " << code_to_str(esp_dev->dstate)
+                    << ", CTemp: " << esp_dev->ctemp/100.0 << ", DTemp: " << esp_dev->dtemp/100.0;
+            }
+            out << "\n";
         }
         return {UnixSocketStatus::OK, out.str()};
     } else if (action == "ON" || action == "OFF" || action == "AUTO" || action == "STATE") {
         int id;
         if (!(iss >> id)) return {UnixSocketStatus::INVALID_ARGUMENT, "Missing or invalid device ID"};
-        Device* d = devs.get_device(id);
+        AbstractDevice* d = devs.get_device(id);
         if (!d) return {UnixSocketStatus::DEVICE_NOT_FOUND, ""};
-        if (action == "ON") {
-            d->set_on();
-            return {UnixSocketStatus::OK, "Device ON"};
-        } else if (action == "OFF") {
-            d->set_off();
-            return {UnixSocketStatus::OK, "Device OFF"};
-        } else if (action == "STATE") {
-            std::ostringstream out;
-            out << "ID: " << (int)d->id << ", Name: " << d->name << ", IP: " << d->ip
-                << ", State: " << code_to_str(d->dstate)
-                << ", CTemp: " << d->ctemp/100.0 << ", DTemp: " << d->dtemp/100.0;
-            return {UnixSocketStatus::OK, out.str()};
+        if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+            if (action == "ON") {
+                esp_dev->set_on();
+                return {UnixSocketStatus::OK, "Device ON"};
+            } else if (action == "OFF") {
+                esp_dev->set_off();
+                return {UnixSocketStatus::OK, "Device OFF"};
+            } else if (action == "STATE") {
+                std::ostringstream out;
+                out << "ID: " << (int)d->id << ", Name: " << d->name << ", IP: " << d->ip
+                    << ", State: " << code_to_str(esp_dev->dstate)
+                    << ", CTemp: " << esp_dev->ctemp/100.0 << ", DTemp: " << esp_dev->dtemp/100.0;
+                return {UnixSocketStatus::OK, out.str()};
+            } else if (action == "AUTO") {
+                esp_dev->set_auto_mode();
+                return {UnixSocketStatus::OK, "Device AUTO"};
+            }
+        } else {
+            return {UnixSocketStatus::INVALID_ARGUMENT, "Device does not support ESP01 commands"};
         }
     } else if (action == "SET_TEMP") {
         int id;
         float temp;
         if (!(iss >> id >> temp)) return {UnixSocketStatus::INVALID_ARGUMENT, "Usage: SET_TEMP <id> <temp>"};
-        Device* d = devs.get_device(id);
+        AbstractDevice* d = devs.get_device(id);
         if (!d) return {UnixSocketStatus::DEVICE_NOT_FOUND, ""};
-        d->set_temp(temp);
-        return {UnixSocketStatus::OK, "Temperature set"};
+        if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+            esp_dev->set_temp(temp);
+            return {UnixSocketStatus::OK, "Temperature set"};
+        } else {
+            return {UnixSocketStatus::INVALID_ARGUMENT, "Device does not support temperature setting"};
+        }
     } else if (action == "HELP") {
         std::string help =
             "Supported commands:\n"
@@ -138,11 +152,27 @@ std::pair<UnixSocketStatus, std::string> Api::handle_unix_command(const std::str
             "HELP\n";
         return {UnixSocketStatus::OK, help};
     } else if (action == "AUTO_TEMP") {
-        d->set_auto_mode(AUTO_TEMP);
-        return {UnixSocketStatus::OK, "Device AUTO_TEMP"};
+        int id;
+        if (!(iss >> id)) return {UnixSocketStatus::INVALID_ARGUMENT, "Missing device ID"};
+        AbstractDevice* d = devs.get_device(id);
+        if (!d) return {UnixSocketStatus::DEVICE_NOT_FOUND, ""};
+        if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+            esp_dev->set_auto_mode(AUTO_TEMP);
+            return {UnixSocketStatus::OK, "Device AUTO_TEMP"};
+        } else {
+            return {UnixSocketStatus::INVALID_ARGUMENT, "Device does not support AUTO_TEMP"};
+        }
     } else if (action == "AUTO_TIMER") {
-        d->set_auto_mode(AUTO_TIMER);
-        return {UnixSocketStatus::OK, "Device AUTO_TIMER"};
+        int id;
+        if (!(iss >> id)) return {UnixSocketStatus::INVALID_ARGUMENT, "Missing device ID"};
+        AbstractDevice* d = devs.get_device(id);
+        if (!d) return {UnixSocketStatus::DEVICE_NOT_FOUND, ""};
+        if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+            esp_dev->set_auto_mode(AUTO_TIMER);
+            return {UnixSocketStatus::OK, "Device AUTO_TIMER"};
+        } else {
+            return {UnixSocketStatus::INVALID_ARGUMENT, "Device does not support AUTO_TIMER"};
+        }
     }
     return {UnixSocketStatus::INVALID_COMMAND, "Unknown command"};
 } 

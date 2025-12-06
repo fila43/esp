@@ -10,14 +10,55 @@
 #include <mutex>
 
 #include "server.h"
+#include "collector.h"
+#include <curl/curl.h>
+#include "json.hpp"
+#include <sstream>
 
 #define PORT     8888
 #define MAXLINE 1024
 #define SERVER_ID 0
 
 int sockfd;
-Device * devices[21];
+AbstractDevice * devices[21];
 uint8_t seq = 0;
+
+// HTTP helper - callback function for curl
+static size_t WriteCallback(void *contents, size_t size, size_t nmemb, std::string *s) {
+    size_t newLength = size * nmemb;
+    s->append((char*)contents, newLength);
+    return newLength;
+}
+
+// HTTP helper - make HTTP GET request (efficient version - no copies)
+static bool make_http_request(const std::string& url, std::string& response) {
+    CURL *curl;
+    CURLcode res;
+    
+    response.clear(); // Clear any previous content
+
+    curl = curl_easy_init();
+    if(!curl) {
+        std::cerr << "Failed to initialize CURL" << std::endl;
+        return false;
+    }
+    
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L); // 5 second timeout
+    
+    res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+    
+    if(res != CURLE_OK) {
+        std::cerr << "HTTP request failed: " << curl_easy_strerror(res) << std::endl;
+        response.clear();
+        return false;
+    }
+    
+    return true;
+}
 
 int main (int argc, char* argv[]) {
     Api a;
@@ -41,6 +82,13 @@ int main (int argc, char* argv[]) {
 
     c.bindPort();
     std::thread t = c.start_listen();
+    
+    // Setup and start collector
+    a.setup_collector();
+    if (a.collector) {
+        a.collector->start();
+        std::cout << "Collector thread started" << std::endl;
+    }
 
     int x;
     int d_id;
@@ -56,21 +104,32 @@ int main (int argc, char* argv[]) {
 	scanf("%d",&d_id);
 	std::cout<<"1-on\n2-off\n3-state\n4-set_auto\n5-ctemp\n6-watcher\n";
 	scanf("%d",&x);
-	Device * dev = a.devs.get_device(d_id);
+	AbstractDevice * dev = a.devs.get_device(d_id);
 	switch (x){
 		case 1:
-			dev->set_on();
+			if (auto esp_dev = dynamic_cast<ESP01_custom*>(dev)) {
+				esp_dev->set_on();
+			}
 			break;
 		case 2:
-			dev->set_off();
+			if (auto esp_dev = dynamic_cast<ESP01_custom*>(dev)) {
+				esp_dev->set_off();
+			}
 			break;
 		case 3:
-			dev->request_state();
+			if (auto esp_dev = dynamic_cast<ESP01_custom*>(dev)) {
+				esp_dev->request_state();
+			}
 			break;
 		case 4:
-			dev->set_auto_mode();
+			if (auto esp_dev = dynamic_cast<ESP01_custom*>(dev)) {
+				esp_dev->set_auto_mode();
+			}
 			break;
-		case 5: dev->request_ctemp();
+		case 5: 
+			if (auto esp_dev = dynamic_cast<ESP01_custom*>(dev)) {
+				esp_dev->request_ctemp();
+			}
 			break;
         case 6:
             w.add_api(&a);
@@ -110,7 +169,7 @@ int main (int argc, char* argv[]) {
 	socklen_t len;
 	char str[100];
 	Message  m;
-    	Device * d;
+    	AbstractDevice * d;
 	*/
 /*
 	len = sizeof(cliaddr);
@@ -123,7 +182,7 @@ int main (int argc, char* argv[]) {
 			n = process_message(&m, &cliaddr, &result);
 			switch (n) {
 				case NEW_DEVICE:
-					d = (Device *) result;
+					d = (AbstractDevice *) result;
 					// TODO check device id and range of array
 					devices[d->get_id()] = d;
 					 //print_devices();
@@ -137,23 +196,34 @@ int main (int argc, char* argv[]) {
 				5-set_auto\n6-set_temp\n";
 			scanf("%d",&x);
 			printf("%d\n",x);
-			Device *d = devices[0];
+			AbstractDevice *d = devices[0];
 			switch (x){
 				case 1:
-					d->request_ctemp();
+					if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+						esp_dev->request_ctemp();
+					}
 					break;
 				case 2:
-					d->request_state();
+					if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+						esp_dev->request_state();
+					}
 					break;
 				case 3:
-					d->set_on();
+					if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+						esp_dev->set_on();
+					}
 					break;
 				case 4:
-					d->set_off();
+					if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+						esp_dev->set_off();
+					}
 					break;
 				case 5:
-					d->set_auto_mode();
-					break;
+					if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+						esp_dev->set_auto_mode();
+					}
+					break;</parameter>
+</invoke>
 				case 6:
 					d->set_temp(20);
 					break;
@@ -245,10 +315,11 @@ void Connection::listen(){
 		inet_ntop(AF_INET,&(sender.sin_addr), ip, sizeof(ip));
 		std::cout<<"ip:"<<ip<<" ID: "<<(int)m->id<<std::flush<<std::endl;
 
-        Device * d = api->devs.get_device(m->id);
+        AbstractDevice * d = api->devs.get_device(m->id);
 		if (d == NULL ){
             std::cout<<"device not found"<<std::endl;
              d = api->new_device(std::string(ip),m->id);
+             // Note: Collector will automatically see the new device in api->devs.devices
         }
 
 		api->process_message(d,m);
@@ -258,21 +329,160 @@ void Connection::listen(){
 std::thread Connection::start_listen(){
 	return std::thread(&Connection::listen,this);
 }
-Device::Device(std::string ip, uint8_t id){
-	this->ip = ip;
-	this->id = id;
-}
-Device::Device(std::string ip, std::string name, uint8_t id){
-	this->ip = ip;
-	this->name = name;
-	this->id = id;
+// AbstractDevice implementation
+AbstractDevice::AbstractDevice(std::string ip, uint8_t id) {
+    this->ip = ip;
+    this->id = id;
+    this->name = "Device " + std::to_string(id);
 }
 
-uint8_t Device::get_id(){
+AbstractDevice::AbstractDevice(std::string ip, std::string name, uint8_t id) {
+    this->ip = ip;
+    this->name = name;
+    this->id = id;
+}
+
+// ESP01_custom implementation
+ESP01_custom::ESP01_custom(std::string ip, uint8_t id) 
+    : AbstractDevice(ip, id) {
+    this->name = "ESP01 Custom #" + std::to_string(id);
+    this->ctemp = 0;
+    this->dtemp = 0;
+    this->fsm = FSM_START;
+    this->dstate = OFF;
+}
+
+ESP01_custom::ESP01_custom(std::string ip, std::string name, uint8_t id) 
+    : AbstractDevice(ip, name, id) {
+    this->ctemp = 0;
+    this->dtemp = 0;
+    this->fsm = FSM_START;
+    this->dstate = OFF;
+}
+
+void ESP01_custom::print_state() {
+    std::cout << "|----------------------------------\n| ";
+    this->print();
+    std::cout << "| Current temp: " << (int)this->ctemp << std::endl;
+    std::cout << "| Destination temp: " << (int)this->dtemp << std::endl;
+    std::cout << "| FSM state: " << code_to_str(this->fsm) << std::endl;
+    std::cout << "| Device state: " << code_to_str(this->dstate) << std::endl;
+    std::cout << "|----------------------------------" << std::endl;
+}
+
+// PowerMeterDevice implementation  
+PowerMeterDevice::PowerMeterDevice(std::string ip, uint8_t id)
+    : AbstractDevice(ip, id) {
+    this->name = "Power Meter #" + std::to_string(id);
+    this->power = 0.0f;
+    this->energy_total = 0.0f;
+    this->energy_today = 0.0f;
+    this->last_power_update = std::chrono::system_clock::now();
+}
+
+PowerMeterDevice::PowerMeterDevice(std::string ip, std::string name, uint8_t id)
+    : AbstractDevice(ip, name, id) {
+    this->power = 0.0f;
+    this->energy_total = 0.0f;
+    this->energy_today = 0.0f;
+    this->last_power_update = std::chrono::system_clock::now();
+}
+
+void PowerMeterDevice::print_state() {
+    std::cout << "|----------------------------------\n| ";
+    this->print();
+    std::cout << "| Power: " << this->power << "W" << std::endl;
+    std::cout << "| Energy Today: " << this->energy_today << "kWh" << std::endl;
+    std::cout << "| Energy Total: " << this->energy_total << "kWh" << std::endl;
+    std::cout << "|----------------------------------" << std::endl;
+}
+
+void PowerMeterDevice::update_from_measurement(const DeviceMeasurement& measurement) {
+    // Call parent method to update name
+    AbstractDevice::update_from_measurement(measurement);
+    
+    this->power = measurement.power;
+    this->energy_total = measurement.energy_total;
+    this->energy_today = measurement.energy_today;
+    this->last_power_update = measurement.timestamp;
+}
+
+void PowerMeterDevice::request_state() {
+    // Power meter specific state retrieval - HTTP request to Tasmota API
+    std::cout << "PowerMeterDevice: Requesting state for device ID " << (int)this->id 
+              << " (" << this->name << ")" << std::endl;
+    
+    if (this->ip.empty()) {
+        std::cerr << "PowerMeterDevice: No IP address set" << std::endl;
+        return;
+    }
+    
+    // Build Tasmota API URL for sensor data (Status 8)
+    std::string url = "http://" + this->ip + "/cm?cmnd=Status%208";
+    std::cout << "  Making HTTP request for power data: " << url << std::endl;
+    
+    std::string response;
+    if (!make_http_request(url, response) || response.empty()) {
+        std::cerr << "  HTTP request failed or empty response" << std::endl;
+        return;
+    }
+    
+    try {
+        // Parse JSON response
+        nlohmann::json json_data = nlohmann::json::parse(response);
+        
+        // Extract power data from StatusSNS.ENERGY
+        if (json_data.contains("StatusSNS") && json_data["StatusSNS"].contains("ENERGY")) {
+            auto energy = json_data["StatusSNS"]["ENERGY"];
+            
+            if (energy.contains("Power")) {
+                this->power = energy["Power"].get<float>();
+                std::cout << "  Power: " << this->power << "W" << std::endl;
+            }
+            
+            if (energy.contains("Today")) {
+                this->energy_today = energy["Today"].get<float>();
+                std::cout << "  Energy Today: " << this->energy_today << "kWh" << std::endl;
+            }
+            
+            if (energy.contains("Total")) {
+                this->energy_total = energy["Total"].get<float>();
+                std::cout << "  Energy Total: " << this->energy_total << "kWh" << std::endl;
+            }
+            
+            // Additional power metrics from your example
+            if (energy.contains("Voltage")) {
+                float voltage = energy["Voltage"].get<float>();
+                std::cout << "  Voltage: " << voltage << "V" << std::endl;
+            }
+            
+            if (energy.contains("Current")) {
+                float current = energy["Current"].get<float>();
+                std::cout << "  Current: " << current << "A" << std::endl;
+            }
+            
+            if (energy.contains("Yesterday")) {
+                float yesterday = energy["Yesterday"].get<float>();
+                std::cout << "  Energy Yesterday: " << yesterday << "kWh" << std::endl;
+            }
+            
+            this->last_power_update = std::chrono::system_clock::now();
+            std::cout << "  Power data updated successfully" << std::endl;
+        } else {
+            std::cout << "  No ENERGY data found in response" << std::endl;
+        }
+        
+    } catch (const nlohmann::json::exception& e) {
+        std::cerr << "  JSON parsing error: " << e.what() << std::endl;
+        std::cerr << "  Response was: " << response.substr(0, 200) << std::endl;
+    }
+}
+
+uint8_t AbstractDevice::get_id(){
 	return this->id;
 }
 
-int Device::request_ctemp(){
+int ESP01_custom::request_ctemp(){
 	Message m;
 	m.id = SERVER_ID;
 	m.type = TEMP;
@@ -283,18 +493,19 @@ int Device::request_ctemp(){
 	return 0;
 }
 
-int Device::request_state() {
+void ESP01_custom::request_state() {
+	// ESP01 specific state retrieval - send UDP request for device state
+	std::cout << "ESP01_custom: Requesting state for device ID " << (int)this->id << std::endl;
+	
 	Message m;
 	m.id = SERVER_ID;
 	m.type = STATE;
 	m.seq = seq++;
 
 	this->send_message(&m);
-
-	return 0;
 }
 
-int Device::set_on(){
+int ESP01_custom::set_on(){
 	Message m;
 	m.id = SERVER_ID;
 	m.type = COMMAND;
@@ -306,7 +517,7 @@ int Device::set_on(){
 	return 0;
 }
 
-int Device::set_off(){
+int ESP01_custom::set_off(){
 	Message m;
 	m.id = SERVER_ID;
 	m.type = COMMAND;
@@ -317,7 +528,7 @@ int Device::set_off(){
 
 	return 0;
 }
-int Device::set_auto_mode(int mode_type){
+int ESP01_custom::set_auto_mode(int mode_type){
 	Message m;
 	m.id = SERVER_ID;
 	m.type = COMMAND;
@@ -328,7 +539,7 @@ int Device::set_auto_mode(int mode_type){
 
 	return 0;
 }
-int Device::set_temp(float temp){
+int ESP01_custom::set_temp(float temp){
 	Message m;
 	m.id = SERVER_ID;
 	m.type = DTEMP;
@@ -340,7 +551,7 @@ int Device::set_temp(float temp){
 	return 0;
 }
 
-Device * Devices::get_device(uint8_t id){
+AbstractDevice * Devices::get_device(uint8_t id){
     std::cout<<"argument ID: "<<(unsigned int)id<<std::endl;
 	for (auto d: this->devices)
 		if (d->id == id){
@@ -362,7 +573,7 @@ void print_devices(){
 	return;
 }
 */
-int Api::process_message (Device * d, Message *m){
+int Api::process_message (AbstractDevice * d, Message *m){
 	int res;
     std::cout<<"new message to process"<<std::endl;
     std::cout<<(unsigned int)m->type<<std::endl;
@@ -382,13 +593,18 @@ int Api::process_message (Device * d, Message *m){
 			return NEW_DEVICE;
 		case STATE:
 			printf("state\n");
-            if (!d->parse_state((State *) m))
-                std::cout<<"error in parsing state - dtemps differs";
-            d->print_state();
+            if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+                if (!esp_dev->parse_state((State *) m)) {
+                    std::cout<<"error in parsing state - dtemps differs";
+                }
+                esp_dev->print_state();
+            }
 			break;
 		case TEMP:
-			d->ctemp = m->data;
-			printf("ctemp: %d\n",m->data);
+			if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+				esp_dev->ctemp = m->data;
+				printf("ctemp: %d\n",m->data);
+			}
 			break;
 		case CONFIRM:
 			printf("confirm\n",m->data);
@@ -404,7 +620,7 @@ int Api::process_message (Device * d, Message *m){
 		}
 	return 0;
 }
-bool Device::parse_state(State * s){
+bool ESP01_custom::parse_state(State * s){
     this->ctemp = s->ctemp;
     //if (this->dtemp != s->dtemp)
     //    return false;
@@ -413,25 +629,12 @@ bool Device::parse_state(State * s){
     this->dstate = s->dstate;
     return true;
 }
-Device * Api::new_device(std::string ip, uint8_t id){
-	Device *d = new Device(ip, id);
+AbstractDevice * Api::new_device(std::string ip, uint8_t id){
+	ESP01_custom *d = new ESP01_custom(ip, id);
 	d->api = this;
 	return d;
 }
-int new_device (unsigned short id, struct sockaddr_in * net_info, Device ** device){
-	char ip[30];
-	if ((*device) == NULL)
-		return -1;
-
-	(*device)->id = id;
-	memset(ip, '\0', 24);
-	inet_ntop(AF_INET,&(net_info->sin_addr), ip, INET_ADDRSTRLEN);
-
-	*device = new Device(std::string(ip),"",id);
-
-	return 0;
-}
-int Device::send_message(Message * m){
+int AbstractDevice::send_message(Message * m){
 	struct sockaddr_in dest;
 	int n;
 	std::cout<<"SENDING TO->DEST IP: "<<this->ip<<std::endl;
@@ -447,23 +650,21 @@ int Device::send_message(Message * m){
 	return 0;
 
 }
-void Device::print(){
+void AbstractDevice::print(){
 	std::cout<<"ID: "<<(int)this->id<<" IP:"<<this->ip<<" NAME:"<<this->name<<std::endl;
 }
-void Device::print_state(){
-    std::cout<<"|----------------------------------\n| ";
-    this->print();
-    std::cout<<"| Current temp: "<<(int)this->ctemp<<std::endl;
-    std::cout<<"| Destination temp: "<<(int)this->dtemp<<std::endl;
-    std::cout<<"| FSM state: "<<code_to_str(this->fsm)<<std::endl;
-    std::cout<<"| Device state: "<<code_to_str(this->dstate)<<std::endl;
-    std::cout<<"|----------------------------------"<<std::endl;
+
+void AbstractDevice::update_from_measurement(const DeviceMeasurement& measurement) {
+    // Update device name if provided
+    if (!measurement.device_name.empty()) {
+        this->name = measurement.device_name;
+    }
 }
 void Devices::print_devices(){
 	for (auto d:this->devices)
 		d->print();
 }
-int Device::send_ack(uint16_t seq){
+int AbstractDevice::send_ack(uint16_t seq){
 	Message m;
 
 	m.type = CONFIRM;
@@ -473,7 +674,7 @@ int Device::send_ack(uint16_t seq){
 	return this->send_message(&m);
 
 }
-bool Devices::add_device(Device *d){
+bool Devices::add_device(AbstractDevice *d){
 	devices.emplace_back(d);
 	return true;
 }
@@ -492,7 +693,9 @@ std::thread Watcher::start_watch(){
 void Watcher::watch(){
     while(1){
         for (auto d: this->a->devs.devices){
-            d->request_ctemp();
+            if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+                esp_dev->request_ctemp();
+            }
         }
     sleep(this->delay);
     if (this->stop){
@@ -505,7 +708,9 @@ std::thread Watcher::start_periodic_state_query(unsigned period_sec) {
     return std::thread([this, period_sec]() {
         while (true) {
             for (auto d : this->a->devs.devices) {
-                d->request_state();
+                if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+                    esp_dev->request_state();
+                }
             }
             sleep(period_sec);
             if (this->stop) {
@@ -523,6 +728,8 @@ static int time_to_minutes(const std::string& t) {
     }
     return 0;
 }
+
+
 
 void Watcher::set_schedule(int device_id, const std::vector<std::pair<std::string, std::string>>& schedule) {
     // Pokud už běží thread pro device_id, zastav ho
@@ -548,14 +755,16 @@ void Watcher::set_schedule(int device_id, const std::vector<std::pair<std::strin
                         should_be_on = true;
                 }
             }
-            Device* dev = this->a->devs.get_device(device_id);
+            AbstractDevice* dev = this->a->devs.get_device(device_id);
             if (dev) {
-                if (should_be_on && !last_on) {
-                    dev->set_on();
-                    last_on = true;
-                } else if (!should_be_on && last_on) {
-                    dev->set_off();
-                    last_on = false;
+                if (auto esp_dev = dynamic_cast<ESP01_custom*>(dev)) {
+                    if (should_be_on && !last_on) {
+                        esp_dev->set_on();
+                        last_on = true;
+                    } else if (!should_be_on && last_on) {
+                        esp_dev->set_off();
+                        last_on = false;
+                    }
                 }
             }
             std::this_thread::sleep_for(std::chrono::seconds(30));
@@ -591,12 +800,20 @@ void Cli::print_header(){
 }
 void Cli::print_table(){
 	for ( auto d: this->a->devs.devices){
-    std::cout << "| "<<(int)d->id<<" |" << std::setw(16)<<std::right<<d->ip<<" | "
-        << std::setw(13)<<std::right<<d->name<<" | "
-        << std::setw(12)<<std::right<<(int)d->ctemp<<" | "
-        << std::setw(9)<<std::right<<(int)d->dtemp<<" | "
-        << std::setw(5)<<std::right<<code_to_str(d->dstate)<<" |"<<std::endl;
-    std::cout << std::string(74,'-') << std::endl;
+        std::cout << "| "<<(int)d->id<<" |" << std::setw(16)<<std::right<<d->ip<<" | "
+            << std::setw(13)<<std::right<<d->name<<" | ";
+        
+        if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+            std::cout << std::setw(12)<<std::right<<(int)esp_dev->ctemp<<" | "
+                << std::setw(9)<<std::right<<(int)esp_dev->dtemp<<" | "
+                << std::setw(5)<<std::right<<code_to_str(esp_dev->dstate);
+        } else {
+            std::cout << std::setw(12)<<std::right<<"N/A"<<" | "
+                << std::setw(9)<<std::right<<"N/A"<<" | "
+                << std::setw(5)<<std::right<<"N/A";
+        }
+        std::cout <<" |"<<std::endl;
+        std::cout << std::string(74,'-') << std::endl;
 	}
 }
 void  Cli::print_commands(){
@@ -656,7 +873,7 @@ start:	this->print_devices();
 	    }
 dvc:	int d = this->select_device();
 
-	Device *dev = this->a->devs.get_device(d);
+	AbstractDevice *dev = this->a->devs.get_device(d);
 	if (dev == NULL){
 		std::cout<<"unknown device try it again"<<std::endl;
 		goto dvc;
@@ -667,22 +884,39 @@ dvc:	int d = this->select_device();
 
 
 }
-bool Cli::run_command(Device *d, std::string c){
-	if (c == "ON" || c == "on" )
-		d->set_on();
-	if (c == "OFF" || c == "off" )
-		d->set_off();
-	if (c == "AUTO" || c == "auto" )
-		d->set_auto_mode();
-	if (c == "STATE" || c == "state" || c =="s")
-		d->request_state();
-	if (c == "TEMP" || c == "temp" )
-		d->request_ctemp();
-	if (c == "DTEMP" || c == "dtemp" ){
-		float t;
-		std::cout<<"Set temperature: ";
-		std::cin>>t;
-		d->set_temp(t);
+bool Cli::run_command(AbstractDevice *d, std::string c){
+	if (c == "ON" || c == "on") {
+		if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+			esp_dev->set_on();
+		}
+	}
+	if (c == "OFF" || c == "off") {
+		if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+			esp_dev->set_off();
+		}
+	}
+	if (c == "AUTO" || c == "auto") {
+		if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+			esp_dev->set_auto_mode();
+		}
+	}
+	if (c == "STATE" || c == "state" || c =="s") {
+		if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+			esp_dev->request_state();
+		}
+	}
+	if (c == "TEMP" || c == "temp") {
+		if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+			esp_dev->request_ctemp();
+		}
+	}
+	if (c == "DTEMP" || c == "dtemp") {
+		if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+			float t;
+			std::cout<<"Set temperature: ";
+			std::cin>>t;
+			esp_dev->set_temp(t);
+		}
 	}
 
 	return true;
@@ -720,6 +954,35 @@ Watcher& Watcher::instance() {
     static Watcher inst;
     return inst;
 }
+
+// ===========================
+// Api Implementation - Collector integration
+// ===========================
+
+Api::Api() : c(PORT, this) {
+    // Initialize curl for HTTP requests
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    
+    // Constructor - collector will be initialized in setup_collector()
+    collector = nullptr;
+}
+
+Api::~Api() {
+    if (collector) {
+        collector->stop();  // Stop collector thread
+    }
+    
+    // Cleanup curl
+    curl_global_cleanup();
+}
+
+void Api::setup_collector() {
+    std::cout << "Setting up Collector..." << std::endl;
+    collector = std::make_unique<Collector>(this);  // Pass Api reference
+    std::cout << "Collector setup completed" << std::endl;
+}
+
+
 
 
 

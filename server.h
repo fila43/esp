@@ -9,6 +9,12 @@
 #include <tuple>
 #include <utility>
 #include <map>
+#include <chrono>
+#include <memory>
+
+// Forward declarations to avoid circular dependency
+struct DeviceMeasurement;
+class Collector;
 
 class Api;
 class UnixSocketServer;
@@ -23,8 +29,9 @@ enum class UnixSocketStatus {
     INTERNAL_ERROR
 };
 
-class Device{
-private:
+// Abstract Device class - contains only common elements
+class AbstractDevice{
+protected:
 	int send_message(Message * m);
 
 public:
@@ -32,38 +39,70 @@ public:
 	Api * api;
 	uint8_t id;
 	std::string ip;
+
+	AbstractDevice(std::string ip, std::string name, uint8_t id);
+	AbstractDevice(std::string ip, uint8_t id);
+	virtual ~AbstractDevice() = default;
+	
+    // Common methods
+	std::string toString();
+	uint8_t get_id();
+	int send_ack(uint16_t);
+	virtual void print();
+    virtual void print_state() {}
+    virtual void update_from_measurement(const DeviceMeasurement& measurement);
+    virtual void request_state() = 0;  // Polymorphic method - each device type implements differently
+};
+
+// ESP01 Custom - temperature and state functionality
+class ESP01_custom : public AbstractDevice {
+public:
     int32_t ctemp;
     int32_t dtemp;
     uint8_t fsm;
     uint8_t dstate;
 
-
-	Device(std::string ip, std::string name, uint8_t id);
-	Device(std::string ip, uint8_t id);
+	ESP01_custom(std::string ip, std::string name, uint8_t id);
+	ESP01_custom(std::string ip, uint8_t id);
+	
+    // Temperature and state methods
     bool parse_state(State *s);
 	int request_ctemp();
-	int request_state();
+	void request_state() override;  // ESP01 specific state retrieval (polymorphic)
 	int set_on();
 	int set_off();
 	int set_auto_mode(int mode_type);
 	int set_temp(float temp);
-	std::string toString();
-	uint8_t get_id();
-	int send_ack(uint16_t);
-	void print();
-    void print_state();
+    void print_state() override;
     int set_auto_mode() { return set_auto_mode(AUTO_TEMP); }
+};
+
+// Power Meter Device - power monitoring functionality
+class PowerMeterDevice : public AbstractDevice {
+public:
+    // Power monitoring fields
+    float power;        // active power in W
+    float energy_total; // total energy in kWh
+    float energy_today; // today's energy in kWh
+    std::chrono::system_clock::time_point last_power_update;
+    
+    PowerMeterDevice(std::string ip, std::string name, uint8_t id);
+    PowerMeterDevice(std::string ip, uint8_t id);
+    
+    void print_state() override;
+    void update_from_measurement(const DeviceMeasurement& measurement) override;
+    void request_state() override;  // Power meter specific state retrieval
 };
 
 class Devices{
 public:
-	std::vector<Device*> devices;
-	bool add_device(Device * d);
-	bool remove_device(Device * d);
+	std::vector<AbstractDevice*> devices;
+	bool add_device(AbstractDevice * d);
+	bool remove_device(AbstractDevice * d);
 	bool remove_device(uint8_t id);
 	void print_devices();
 	void print_device(uint8_t id);
-	Device * get_device(uint8_t id);
+	AbstractDevice * get_device(uint8_t id);
 };
 
 class Connection{
@@ -91,7 +130,7 @@ public:
      * @param port
      */
     void send(std::string data,std::string ip,in_port_t port);
-    void send(Message * m, Device * d);
+    void send(Message * m, AbstractDevice * d);
     void listen();
     std::thread start_listen();
     bool broadcast_hello_message();
@@ -138,9 +177,17 @@ public:
 	Devices devs;
 	Events evs;
 	Connection c;
-	int process_message(Device *, Message *);
-	Device * new_device(std::string ip, uint8_t id);
+	std::unique_ptr<Collector> collector;
+	
+	Api();
+	~Api();
+	
+	int process_message(AbstractDevice *, Message *);
+	AbstractDevice * new_device(std::string ip, uint8_t id);
     std::pair<UnixSocketStatus, std::string> handle_unix_command(const std::string& cmd);
+    
+    // Collector management methods
+    void setup_collector();
 };
 
 class Cli{
@@ -151,7 +198,7 @@ public:
     void start();
     void print_devices();
     Cli(Api *a);
-    bool run_command(Device*, std::string);
+    bool run_command(AbstractDevice*, std::string);
     std::string select_command();
     int select_device();
     void print_commands();
@@ -160,8 +207,8 @@ public:
 };
 
 std::string code_to_str(uint8_t c);
-int send_ack(Device * d, int16_t seq);
-int new_device(unsigned short id, struct sockaddr_in * net_info, Device ** device);
+int send_ack(AbstractDevice * d, int16_t seq);
+int new_device(unsigned short id, struct sockaddr_in * net_info, AbstractDevice ** device);
 
 // Třída pro obsluhu unix socketu
 class UnixSocketServer {

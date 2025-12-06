@@ -16,7 +16,11 @@ void HttpServer::start() {
             bool first = true;
             for (auto d : api->devs.devices) {
                 if (!first) out << ",";
-                out << "{\"id\":" << (int)d->id << ",\"name\":\"" << d->name << "\",\"state\":\"" << code_to_str(d->dstate) << "\",\"ctemp\":" << d->ctemp/100.0 << ",\"dtemp\":" << d->dtemp/100.0 << "}";
+                out << "{\"id\":" << (int)d->id << ",\"name\":\"" << d->name;
+                if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+                    out << "\",\"state\":\"" << code_to_str(esp_dev->dstate) << "\",\"ctemp\":" << esp_dev->ctemp/100.0 << ",\"dtemp\":" << esp_dev->dtemp/100.0;
+                }
+                out << "}";
                 first = false;
             }
             out << "]";
@@ -25,10 +29,15 @@ void HttpServer::start() {
 
         svr.Post(R"(/device/(\d+)/on)", [this](const httplib::Request& req, httplib::Response& res) {
             int id = std::stoi(req.matches[1]);
-            Device* d = api->devs.get_device(id);
+            AbstractDevice* d = api->devs.get_device(id);
             if (d) {
-                d->set_on();
-                res.set_content("{\"result\":\"ok\"}", "application/json");
+                if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+                    esp_dev->set_on();
+                    res.set_content("{\"result\":\"ok\"}", "application/json");
+                } else {
+                    res.status = 400;
+                    res.set_content("{\"error\":\"device does not support set_on\"}", "application/json");
+                }
             } else {
                 res.status = 404;
                 res.set_content("{\"error\":\"not found\"}", "application/json");
@@ -37,10 +46,15 @@ void HttpServer::start() {
 
         svr.Post(R"(/device/(\d+)/off)", [this](const httplib::Request& req, httplib::Response& res) {
             int id = std::stoi(req.matches[1]);
-            Device* d = api->devs.get_device(id);
+            AbstractDevice* d = api->devs.get_device(id);
             if (d) {
-                d->set_off();
-                res.set_content("{\"result\":\"ok\"}", "application/json");
+                if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+                    esp_dev->set_off();
+                    res.set_content("{\"result\":\"ok\"}", "application/json");
+                } else {
+                    res.status = 400;
+                    res.set_content("{\"error\":\"device does not support set_off\"}", "application/json");
+                }
             } else {
                 res.status = 404;
                 res.set_content("{\"error\":\"not found\"}", "application/json");
@@ -49,7 +63,7 @@ void HttpServer::start() {
 
         svr.Post(R"(/device/(\d+)/auto)", [this](const httplib::Request& req, httplib::Response& res) {
             int id = std::stoi(req.matches[1]);
-            Device* d = api->devs.get_device(id);
+            AbstractDevice* d = api->devs.get_device(id);
             int mode_type = AUTO_TEMP;
             try {
                 if (req.has_param("type")) {
@@ -61,8 +75,13 @@ void HttpServer::start() {
                 }
             } catch (...) {}
             if (d) {
-                d->set_auto_mode(mode_type);
-                res.set_content("{\"result\":\"ok\"}", "application/json");
+                if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+                    esp_dev->set_auto_mode(mode_type);
+                    res.set_content("{\"result\":\"ok\"}", "application/json");
+                } else {
+                    res.status = 400;
+                    res.set_content("{\"error\":\"device does not support auto mode\"}", "application/json");
+                }
             } else {
                 res.status = 404;
                 res.set_content("{\"error\":\"not found\"}", "application/json");
@@ -71,10 +90,14 @@ void HttpServer::start() {
 
         svr.Get(R"(/device/(\d+)/state)", [this](const httplib::Request& req, httplib::Response& res) {
             int id = std::stoi(req.matches[1]);
-            Device* d = api->devs.get_device(id);
+            AbstractDevice* d = api->devs.get_device(id);
             if (d) {
                 std::ostringstream out;
-                out << "{\"id\":" << (int)d->id << ",\"name\":\"" << d->name << "\",\"state\":\"" << code_to_str(d->dstate) << "\",\"ctemp\":" << d->ctemp/100.0 << ",\"dtemp\":" << d->dtemp/100.0 << "}";
+                out << "{\"id\":" << (int)d->id << ",\"name\":\"" << d->name;
+                if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+                    out << "\",\"state\":\"" << code_to_str(esp_dev->dstate) << "\",\"ctemp\":" << esp_dev->ctemp/100.0 << ",\"dtemp\":" << esp_dev->dtemp/100.0;
+                }
+                out << "}";
                 res.set_content(out.str(), "application/json");
             } else {
                 res.status = 404;
@@ -84,15 +107,20 @@ void HttpServer::start() {
 
         svr.Post(R"(/device/(\d+)/set_temp)", [this](const httplib::Request& req, httplib::Response& res) {
             int id = std::stoi(req.matches[1]);
-            Device* d = api->devs.get_device(id);
+            AbstractDevice* d = api->devs.get_device(id);
             if (d) {
-                try {
-                    float temp = std::stof(req.body);
-                    d->set_temp(temp);
-                    res.set_content("{\"result\":\"ok\"}", "application/json");
-                } catch (...) {
+                if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+                    try {
+                        float temp = std::stof(req.body);
+                        esp_dev->set_temp(temp);
+                        res.set_content("{\"result\":\"ok\"}", "application/json");
+                    } catch (...) {
+                        res.status = 400;
+                        res.set_content("{\"error\":\"invalid temp\"}", "application/json");
+                    }
+                } else {
                     res.status = 400;
-                    res.set_content("{\"error\":\"invalid temp\"}", "application/json");
+                    res.set_content("{\"error\":\"device does not support set_temp\"}", "application/json");
                 }
             } else {
                 res.status = 404;
@@ -102,7 +130,7 @@ void HttpServer::start() {
 
         svr.Post(R"(/device/(\d+)/schedule)", [this](const httplib::Request& req, httplib::Response& res) {
             int id = std::stoi(req.matches[1]);
-            Device* d = api->devs.get_device(id);
+            AbstractDevice* d = api->devs.get_device(id);
             if (!d) {
                 res.status = 404;
                 res.set_content("{\"error\":\"not found\"}", "application/json");
@@ -138,9 +166,13 @@ void HttpServer::start() {
                 out << "<tr>";
                 out << "<td>" << (int)d->id << "</td>";
                 out << "<td>" << d->name << "</td>";
-                out << "<td>" << code_to_str(d->dstate) << "</td>";
-                out << "<td>" << d->ctemp/100.0 << " °C</td>";
-                out << "<td>" << d->dtemp/100.0 << " °C</td>";
+                if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
+                    out << "<td>" << code_to_str(esp_dev->dstate) << "</td>";
+                    out << "<td>" << esp_dev->ctemp/100.0 << " °C</td>";
+                    out << "<td>" << esp_dev->dtemp/100.0 << " °C</td>";
+                } else {
+                    out << "<td>N/A</td><td>N/A</td><td>N/A</td>";
+                }
                 out << "</tr>";
             }
             out << "</table></body></html>";
