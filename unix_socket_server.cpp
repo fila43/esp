@@ -149,6 +149,7 @@ std::pair<UnixSocketStatus, std::string> Api::handle_unix_command(const std::str
             "AUTO_TIMER <id>\n"
             "STATE <id>\n"
             "SET_TEMP <id> <temp>\n"
+            "POWER_UDP <id>\n"
             "HELP\n";
         return {UnixSocketStatus::OK, help};
     } else if (action == "AUTO_TEMP") {
@@ -172,6 +173,17 @@ std::pair<UnixSocketStatus, std::string> Api::handle_unix_command(const std::str
             return {UnixSocketStatus::OK, "Device AUTO_TIMER"};
         } else {
             return {UnixSocketStatus::INVALID_ARGUMENT, "Device does not support AUTO_TIMER"};
+        }
+    } else if (action == "POWER_UDP") {
+        int id;
+        if (!(iss >> id)) return {UnixSocketStatus::INVALID_ARGUMENT, "Missing device ID"};
+        AbstractDevice* d = devs.get_device(id);
+        if (!d) return {UnixSocketStatus::DEVICE_NOT_FOUND, ""};
+        if (auto power_dev = dynamic_cast<PowerMeterDevice*>(d)) {
+            power_dev->request_power_udp();
+            return {UnixSocketStatus::OK, "UDP Power request sent"};
+        } else {
+            return {UnixSocketStatus::INVALID_ARGUMENT, "Device does not support UDP power requests"};
         }
     }
     return {UnixSocketStatus::INVALID_COMMAND, "Unknown command"};

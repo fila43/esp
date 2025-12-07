@@ -23,6 +23,9 @@ int sockfd;
 AbstractDevice * devices[21];
 uint8_t seq = 0;
 
+// Global database API instance (provisory - refactor later)
+DbApi* global_db = nullptr;
+
 // HTTP helper - callback function for curl
 static size_t WriteCallback(void *contents, size_t size, size_t nmemb, std::string *s) {
     size_t newLength = size * nmemb;
@@ -61,6 +64,9 @@ static bool make_http_request(const std::string& url, std::string& response) {
 }
 
 int main (int argc, char* argv[]) {
+    // Initialize global database API (provisory)
+    global_db = new DbApi("host=localhost dbname=power user=postgres");
+    
     Api a;
     Cli i = Cli(&a);
 
@@ -89,6 +95,9 @@ int main (int argc, char* argv[]) {
         a.collector->start();
         std::cout << "Collector thread started" << std::endl;
     }
+    
+    // Start periodic broadcast
+    a.start_periodic_broadcast();
 
     int x;
     int d_id;
@@ -107,24 +116,16 @@ int main (int argc, char* argv[]) {
 	AbstractDevice * dev = a.devs.get_device(d_id);
 	switch (x){
 		case 1:
-			if (auto esp_dev = dynamic_cast<ESP01_custom*>(dev)) {
-				esp_dev->set_on();
-			}
+			dev->set_on();  // All devices now have ESP01 compatibility methods
 			break;
 		case 2:
-			if (auto esp_dev = dynamic_cast<ESP01_custom*>(dev)) {
-				esp_dev->set_off();
-			}
+			dev->set_off();  // All devices now have ESP01 compatibility methods
 			break;
 		case 3:
-			if (auto esp_dev = dynamic_cast<ESP01_custom*>(dev)) {
-				esp_dev->request_state();
-			}
+			dev->request_state();  // All devices now have ESP01 compatibility methods
 			break;
 		case 4:
-			if (auto esp_dev = dynamic_cast<ESP01_custom*>(dev)) {
-				esp_dev->set_auto_mode();
-			}
+			dev->set_auto_mode();  // All devices now have ESP01 compatibility methods
 			break;
 		case 5: 
 			if (auto esp_dev = dynamic_cast<ESP01_custom*>(dev)) {
@@ -199,14 +200,10 @@ int main (int argc, char* argv[]) {
 			AbstractDevice *d = devices[0];
 			switch (x){
 				case 1:
-					if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
-						esp_dev->request_ctemp();
-					}
+					d->request_ctemp();  // All devices now have ESP01 compatibility methods
 					break;
 				case 2:
-					if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
-						esp_dev->request_state();
-					}
+					d->request_state();  // All devices now have ESP01 compatibility methods
 					break;
 				case 3:
 					if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
@@ -214,9 +211,7 @@ int main (int argc, char* argv[]) {
 					}
 					break;
 				case 4:
-					if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
-						esp_dev->set_off();
-					}
+					d->set_off();  // All devices now have ESP01 compatibility methods
 					break;
 				case 5:
 					if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
@@ -313,12 +308,12 @@ void Connection::listen(){
 		char ip[30];
 		memset(ip,'\0',24);
 		inet_ntop(AF_INET,&(sender.sin_addr), ip, sizeof(ip));
-		std::cout<<"ip:"<<ip<<" ID: "<<(int)m->id<<std::flush<<std::endl;
+		std::cout<<"ip:"<<ip<<" ID: 0x"<<std::hex<<m->id<<std::dec<<std::flush<<std::endl;
 
         AbstractDevice * d = api->devs.get_device(m->id);
 		if (d == NULL ){
             std::cout<<"device not found"<<std::endl;
-             d = api->new_device(std::string(ip),m->id);
+             d = api->new_device(std::string(ip), m->id, m->data);
              // Note: Collector will automatically see the new device in api->devs.devices
         }
 
@@ -330,20 +325,20 @@ std::thread Connection::start_listen(){
 	return std::thread(&Connection::listen,this);
 }
 // AbstractDevice implementation
-AbstractDevice::AbstractDevice(std::string ip, uint8_t id) {
+AbstractDevice::AbstractDevice(std::string ip, uint32_t id) {
     this->ip = ip;
     this->id = id;
     this->name = "Device " + std::to_string(id);
 }
 
-AbstractDevice::AbstractDevice(std::string ip, std::string name, uint8_t id) {
+AbstractDevice::AbstractDevice(std::string ip, std::string name, uint32_t id) {
     this->ip = ip;
     this->name = name;
     this->id = id;
 }
 
 // ESP01_custom implementation
-ESP01_custom::ESP01_custom(std::string ip, uint8_t id) 
+ESP01_custom::ESP01_custom(std::string ip, uint32_t id) 
     : AbstractDevice(ip, id) {
     this->name = "ESP01 Custom #" + std::to_string(id);
     this->ctemp = 0;
@@ -352,7 +347,7 @@ ESP01_custom::ESP01_custom(std::string ip, uint8_t id)
     this->dstate = OFF;
 }
 
-ESP01_custom::ESP01_custom(std::string ip, std::string name, uint8_t id) 
+ESP01_custom::ESP01_custom(std::string ip, std::string name, uint32_t id) 
     : AbstractDevice(ip, name, id) {
     this->ctemp = 0;
     this->dtemp = 0;
@@ -371,7 +366,7 @@ void ESP01_custom::print_state() {
 }
 
 // PowerMeterDevice implementation  
-PowerMeterDevice::PowerMeterDevice(std::string ip, uint8_t id)
+PowerMeterDevice::PowerMeterDevice(std::string ip, uint32_t id)
     : AbstractDevice(ip, id) {
     this->name = "Power Meter #" + std::to_string(id);
     this->power = 0.0f;
@@ -380,7 +375,7 @@ PowerMeterDevice::PowerMeterDevice(std::string ip, uint8_t id)
     this->last_power_update = std::chrono::system_clock::now();
 }
 
-PowerMeterDevice::PowerMeterDevice(std::string ip, std::string name, uint8_t id)
+PowerMeterDevice::PowerMeterDevice(std::string ip, std::string name, uint32_t id)
     : AbstractDevice(ip, name, id) {
     this->power = 0.0f;
     this->energy_total = 0.0f;
@@ -409,7 +404,7 @@ void PowerMeterDevice::update_from_measurement(const DeviceMeasurement& measurem
 
 void PowerMeterDevice::request_state() {
     // Power meter specific state retrieval - HTTP request to Tasmota API
-    std::cout << "PowerMeterDevice: Requesting state for device ID " << (int)this->id 
+    std::cout << "PowerMeterDevice: Requesting state for device ID 0x" << std::hex << this->id << std::dec
               << " (" << this->name << ")" << std::endl;
     
     if (this->ip.empty()) {
@@ -468,6 +463,18 @@ void PowerMeterDevice::request_state() {
             
             this->last_power_update = std::chrono::system_clock::now();
             std::cout << "  Power data updated successfully" << std::endl;
+            
+            // Save power measurement to database (new simplified structure)
+            if (global_db) {
+                bool db_result = global_db->save_power_measurement(this->id, this->power);
+                if (db_result) {
+                    std::cout << "  Power data saved to database successfully" << std::endl;
+                } else {
+                    std::cerr << "  Failed to save power data to database" << std::endl;
+                }
+            } else {
+                std::cerr << "  Database not available" << std::endl;
+            }
         } else {
             std::cout << "  No ENERGY data found in response" << std::endl;
         }
@@ -478,7 +485,61 @@ void PowerMeterDevice::request_state() {
     }
 }
 
-uint8_t AbstractDevice::get_id(){
+// PowerMeterDevice ESP01 compatibility methods - do nothing for power meters
+bool PowerMeterDevice::parse_state(State *s) { 
+    return false; // Power meters don't handle ESP01 state messages
+}
+
+int PowerMeterDevice::request_ctemp() { 
+    return 0; // Power meters don't have temperature control
+}
+
+int PowerMeterDevice::set_on() { 
+    return 0; // Power meters can't be turned on/off via software
+}
+
+int PowerMeterDevice::set_off() { 
+    return 0; // Power meters can't be turned on/off via software  
+}
+
+int PowerMeterDevice::set_auto_mode(int mode_type) { 
+    return 0; // Power meters don't have auto mode
+}
+
+int PowerMeterDevice::set_temp(float temp) { 
+    return 0; // Power meters don't have temperature setting
+}
+
+void PowerMeterDevice::request_power_udp() {
+    // Request power data via UDP message (fast, asynchronous)
+    std::cout << "PowerMeterDevice: Requesting power via UDP from device 0x" 
+              << std::hex << this->id << std::dec << " (" << this->name << ")" << std::endl;
+    
+    if (this->ip.empty()) {
+        std::cerr << "PowerMeterDevice: No IP address set" << std::endl;
+        return;
+    }
+    
+    // Create UDP POWER request message
+    Message m;
+    m.type = POWER;
+    m.id = SERVER_ID;       // Server ID as sender
+    m.seq = seq++;          // Increment sequence number
+    m.data = 0;             // No specific data needed for power request
+    m.padding = 0;
+    m.padding1 = 0;
+    
+    std::cout << "  Sending UDP POWER request to " << this->ip << " (seq: " << (int)m.seq << ")" << std::endl;
+    
+    // Send UDP message to device
+    if (this->send_message(&m) == 0) {
+        std::cout << "  UDP POWER request sent successfully" << std::endl;
+    } else {
+        std::cerr << "  Failed to send UDP POWER request" << std::endl;
+    }
+}
+
+uint32_t AbstractDevice::get_id(){
 	return this->id;
 }
 
@@ -495,7 +556,7 @@ int ESP01_custom::request_ctemp(){
 
 void ESP01_custom::request_state() {
 	// ESP01 specific state retrieval - send UDP request for device state
-	std::cout << "ESP01_custom: Requesting state for device ID " << (int)this->id << std::endl;
+	std::cout << "ESP01_custom: Requesting state for device ID 0x" << std::hex << this->id << std::dec << std::endl;
 	
 	Message m;
 	m.id = SERVER_ID;
@@ -551,8 +612,8 @@ int ESP01_custom::set_temp(float temp){
 	return 0;
 }
 
-AbstractDevice * Devices::get_device(uint8_t id){
-    std::cout<<"argument ID: "<<(unsigned int)id<<std::endl;
+AbstractDevice * Devices::get_device(uint32_t id){
+    std::cout<<"argument ID: 0x"<<std::hex<<id<<std::dec<<std::endl;
 	for (auto d: this->devices)
 		if (d->id == id){
             d->print();
@@ -593,24 +654,45 @@ int Api::process_message (AbstractDevice * d, Message *m){
 			return NEW_DEVICE;
 		case STATE:
 			printf("state\n");
-            if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
-                if (!esp_dev->parse_state((State *) m)) {
-                    std::cout<<"error in parsing state - dtemps differs";
-                }
-                esp_dev->print_state();
-            }
+			if (!d->parse_state((State *) m)) {
+				std::cout<<"error in parsing state - dtemps differs";
+			}
+			d->print_state();
 			break;
 		case TEMP:
 			if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
 				esp_dev->ctemp = m->data;
-				printf("ctemp: %d\n",m->data);
 			}
+			printf("ctemp: %d\n",m->data);
 			break;
 		case CONFIRM:
 			printf("confirm\n",m->data);
 			break;
 		case ONLINE:
 			printf("online\n",m->data);
+			break;
+		case POWER:
+			{
+				float power_watts = m->data / 100.0f;  // Convert from (W * 100) back to W
+				printf("Power data received from device 0x%08X: %.2fW (raw: %d)\n", 
+				       m->id, power_watts, m->data);
+				
+				// Update power data for PowerMeterDevice
+				if (auto power_dev = dynamic_cast<PowerMeterDevice*>(d)) {
+					power_dev->power = power_watts;
+					power_dev->last_power_update = std::chrono::system_clock::now();
+					
+					// Save power measurement to database (new simplified structure)
+					if (global_db) {
+						bool db_result = global_db->save_power_measurement(power_dev->id, power_dev->power);
+						if (db_result) {
+							std::cout << "  UDP power data saved to database" << std::endl;
+						} else {
+							std::cerr << "  Failed to save UDP power data to database" << std::endl;
+						}
+					}
+				}
+			}
 			break;
 
 		default:
@@ -629,8 +711,25 @@ bool ESP01_custom::parse_state(State * s){
     this->dstate = s->dstate;
     return true;
 }
-AbstractDevice * Api::new_device(std::string ip, uint8_t id){
-	ESP01_custom *d = new ESP01_custom(ip, id);
+AbstractDevice * Api::new_device(std::string ip, uint32_t id, uint8_t device_type){
+	AbstractDevice *d = nullptr;
+	
+	switch(device_type) {
+		case DEV_TYPE_ESP01:
+			d = new ESP01_custom(ip, id);
+			std::cout << "Created ESP01_custom device ID: 0x" << std::hex << id << std::dec << std::endl;
+			break;
+		case DEV_TYPE_POWER_METER:
+			d = new PowerMeterDevice(ip, id);  
+			std::cout << "Created PowerMeterDevice device ID: 0x" << std::hex << id << std::dec << std::endl;
+			break;
+		default:
+			// Default to ESP01_custom for unknown types
+			d = new ESP01_custom(ip, id);
+			std::cout << "Created default ESP01_custom for unknown type " << (int)device_type << ", device ID: 0x" << std::hex << id << std::dec << std::endl;
+			break;
+	}
+	
 	d->api = this;
 	return d;
 }
@@ -651,7 +750,7 @@ int AbstractDevice::send_message(Message * m){
 
 }
 void AbstractDevice::print(){
-	std::cout<<"ID: "<<(int)this->id<<" IP:"<<this->ip<<" NAME:"<<this->name<<std::endl;
+	std::cout<<"ID: 0x"<<std::hex<<this->id<<std::dec<<" IP:"<<this->ip<<" NAME:"<<this->name<<std::endl;
 }
 
 void AbstractDevice::update_from_measurement(const DeviceMeasurement& measurement) {
@@ -693,9 +792,7 @@ std::thread Watcher::start_watch(){
 void Watcher::watch(){
     while(1){
         for (auto d: this->a->devs.devices){
-            if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
-                esp_dev->request_ctemp();
-            }
+            d->request_ctemp();  // All devices now have ESP01 compatibility methods
         }
     sleep(this->delay);
     if (this->stop){
@@ -708,8 +805,11 @@ std::thread Watcher::start_periodic_state_query(unsigned period_sec) {
     return std::thread([this, period_sec]() {
         while (true) {
             for (auto d : this->a->devs.devices) {
-                if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
-                    esp_dev->request_state();
+                // Use UDP for PowerMeterDevice (fast), HTTP for ESP01_custom (full state)
+                if (auto power_dev = dynamic_cast<PowerMeterDevice*>(d)) {
+                    power_dev->request_power_udp();  // Fast UDP power request
+                } else {
+                    d->request_state();              // HTTP state request for other devices
                 }
             }
             sleep(period_sec);
@@ -757,14 +857,12 @@ void Watcher::set_schedule(int device_id, const std::vector<std::pair<std::strin
             }
             AbstractDevice* dev = this->a->devs.get_device(device_id);
             if (dev) {
-                if (auto esp_dev = dynamic_cast<ESP01_custom*>(dev)) {
-                    if (should_be_on && !last_on) {
-                        esp_dev->set_on();
-                        last_on = true;
-                    } else if (!should_be_on && last_on) {
-                        esp_dev->set_off();
-                        last_on = false;
-                    }
+                if (should_be_on && !last_on) {
+                    dev->set_on();  // All devices now have ESP01 compatibility methods
+                    last_on = true;
+                } else if (!should_be_on && last_on) {
+                    dev->set_off();  // All devices now have ESP01 compatibility methods
+                    last_on = false;
                 }
             }
             std::this_thread::sleep_for(std::chrono::seconds(30));
@@ -800,7 +898,7 @@ void Cli::print_header(){
 }
 void Cli::print_table(){
 	for ( auto d: this->a->devs.devices){
-        std::cout << "| "<<(int)d->id<<" |" << std::setw(16)<<std::right<<d->ip<<" | "
+        std::cout << "| 0x"<<std::hex<<d->id<<std::dec<<" |" << std::setw(16)<<std::right<<d->ip<<" | "
             << std::setw(13)<<std::right<<d->name<<" | ";
         
         if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
@@ -886,37 +984,25 @@ dvc:	int d = this->select_device();
 }
 bool Cli::run_command(AbstractDevice *d, std::string c){
 	if (c == "ON" || c == "on") {
-		if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
-			esp_dev->set_on();
-		}
+		d->set_on();  // All devices now have ESP01 compatibility methods
 	}
 	if (c == "OFF" || c == "off") {
-		if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
-			esp_dev->set_off();
-		}
+		d->set_off();  // All devices now have ESP01 compatibility methods
 	}
 	if (c == "AUTO" || c == "auto") {
-		if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
-			esp_dev->set_auto_mode();
-		}
+		d->set_auto_mode();  // All devices now have ESP01 compatibility methods
 	}
 	if (c == "STATE" || c == "state" || c =="s") {
-		if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
-			esp_dev->request_state();
-		}
+		d->request_state();  // All devices now have ESP01 compatibility methods
 	}
 	if (c == "TEMP" || c == "temp") {
-		if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
-			esp_dev->request_ctemp();
-		}
+		d->request_ctemp();  // All devices now have ESP01 compatibility methods
 	}
 	if (c == "DTEMP" || c == "dtemp") {
-		if (auto esp_dev = dynamic_cast<ESP01_custom*>(d)) {
-			float t;
-			std::cout<<"Set temperature: ";
-			std::cin>>t;
-			esp_dev->set_temp(t);
-		}
+		float t;
+		std::cout<<"Set temperature: ";
+		std::cin>>t;
+		d->set_temp(t);  // All devices now have ESP01 compatibility methods
 	}
 
 	return true;
@@ -968,6 +1054,9 @@ Api::Api() : c(PORT, this) {
 }
 
 Api::~Api() {
+    // Stop broadcast thread
+    stop_periodic_broadcast();
+    
     if (collector) {
         collector->stop();  // Stop collector thread
     }
@@ -980,6 +1069,47 @@ void Api::setup_collector() {
     std::cout << "Setting up Collector..." << std::endl;
     collector = std::make_unique<Collector>(this);  // Pass Api reference
     std::cout << "Collector setup completed" << std::endl;
+}
+
+void Api::start_periodic_broadcast() {
+    if (broadcast_running) {
+        std::cout << "Broadcast already running" << std::endl;
+        return;
+    }
+    
+    broadcast_running = true;
+    broadcast_thread = std::thread(&Api::periodic_broadcast_loop, this);
+    std::cout << "Periodic broadcast started (every 60 seconds)" << std::endl;
+}
+
+void Api::stop_periodic_broadcast() {
+    if (!broadcast_running) {
+        return;
+    }
+    
+    broadcast_running = false;
+    
+    if (broadcast_thread.joinable()) {
+        broadcast_thread.join();
+    }
+    
+    std::cout << "Periodic broadcast stopped" << std::endl;
+}
+
+void Api::periodic_broadcast_loop() {
+    while (broadcast_running) {
+        // Sleep for 60 seconds (1 minute)
+        std::this_thread::sleep_for(std::chrono::seconds(60));
+        
+        if (!broadcast_running) break;
+        
+        // Send broadcast hello message
+        if (c.broadcast_hello_message()) {
+            std::cout << "Periodic hello broadcast sent successfully" << std::endl;
+        } else {
+            std::cerr << "Failed to send periodic hello broadcast" << std::endl;
+        }
+    }
 }
 
 

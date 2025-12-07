@@ -37,21 +37,30 @@ protected:
 public:
 	std::string name;
 	Api * api;
-	uint8_t id;
+	uint32_t id;      // Changed from uint8_t to uint32_t for ESP Chip ID
 	std::string ip;
 
-	AbstractDevice(std::string ip, std::string name, uint8_t id);
-	AbstractDevice(std::string ip, uint8_t id);
+	AbstractDevice(std::string ip, std::string name, uint32_t id);
+	AbstractDevice(std::string ip, uint32_t id);
 	virtual ~AbstractDevice() = default;
 	
     // Common methods
 	std::string toString();
-	uint8_t get_id();
+	uint32_t get_id();
 	int send_ack(uint16_t);
 	virtual void print();
     virtual void print_state() {}
     virtual void update_from_measurement(const DeviceMeasurement& measurement);
     virtual void request_state() = 0;  // Polymorphic method - each device type implements differently
+    
+    // ESP01 compatibility methods (default empty implementation for non-ESP01 devices)
+    virtual bool parse_state(State *s) { return false; }
+    virtual int request_ctemp() { return 0; }
+    virtual int set_on() { return 0; }
+    virtual int set_off() { return 0; }
+    virtual int set_auto_mode(int mode_type) { return 0; }
+    virtual int set_temp(float temp) { return 0; }
+    virtual int set_auto_mode() { return set_auto_mode(AUTO_TEMP); }
 };
 
 // ESP01 Custom - temperature and state functionality
@@ -62,8 +71,8 @@ public:
     uint8_t fsm;
     uint8_t dstate;
 
-	ESP01_custom(std::string ip, std::string name, uint8_t id);
-	ESP01_custom(std::string ip, uint8_t id);
+	ESP01_custom(std::string ip, std::string name, uint32_t id);
+	ESP01_custom(std::string ip, uint32_t id);
 	
     // Temperature and state methods
     bool parse_state(State *s);
@@ -86,12 +95,22 @@ public:
     float energy_today; // today's energy in kWh
     std::chrono::system_clock::time_point last_power_update;
     
-    PowerMeterDevice(std::string ip, std::string name, uint8_t id);
-    PowerMeterDevice(std::string ip, uint8_t id);
+    PowerMeterDevice(std::string ip, std::string name, uint32_t id);
+    PowerMeterDevice(std::string ip, uint32_t id);
     
     void print_state() override;
     void update_from_measurement(const DeviceMeasurement& measurement) override;
-    void request_state() override;  // Power meter specific state retrieval
+    void request_state() override;          // Power meter HTTP API state retrieval
+    void request_power_udp();               // Request power data via UDP (fast, asynchronous)
+    
+    // ESP01 compatibility methods (do nothing - PowerMeterDevice doesn't support these)
+    bool parse_state(State *s);        // Does nothing - PowerMeterDevice uses HTTP not UDP state
+    int request_ctemp();               // Does nothing - PowerMeterDevice doesn't have temperature sensor
+    int set_on();                      // Does nothing - PowerMeterDevice doesn't control relay
+    int set_off();                     // Does nothing - PowerMeterDevice doesn't control relay  
+    int set_auto_mode(int mode_type);  // Does nothing - PowerMeterDevice doesn't have auto mode
+    int set_temp(float temp);          // Does nothing - PowerMeterDevice doesn't control temperature
+    int set_auto_mode() { return set_auto_mode(AUTO_TEMP); } // Does nothing - compatibility wrapper
 };
 
 class Devices{
@@ -99,10 +118,10 @@ public:
 	std::vector<AbstractDevice*> devices;
 	bool add_device(AbstractDevice * d);
 	bool remove_device(AbstractDevice * d);
-	bool remove_device(uint8_t id);
+	bool remove_device(uint32_t id);
 	void print_devices();
-	void print_device(uint8_t id);
-	AbstractDevice * get_device(uint8_t id);
+	void print_device(uint32_t id);
+	AbstractDevice * get_device(uint32_t id);
 };
 
 class Connection{
@@ -183,11 +202,20 @@ public:
 	~Api();
 	
 	int process_message(AbstractDevice *, Message *);
-	AbstractDevice * new_device(std::string ip, uint8_t id);
+	AbstractDevice * new_device(std::string ip, uint32_t id, uint8_t device_type);
     std::pair<UnixSocketStatus, std::string> handle_unix_command(const std::string& cmd);
     
     // Collector management methods
     void setup_collector();
+    
+    // Broadcast management
+    void start_periodic_broadcast();
+    void stop_periodic_broadcast();
+    
+private:
+    std::thread broadcast_thread;
+    bool broadcast_running = false;
+    void periodic_broadcast_loop();
 };
 
 class Cli{
@@ -241,10 +269,14 @@ public:
     ~DbApi();
     bool connect();
     void disconnect();
+    // Legacy method (backward compatibility)
     bool save_measurement(int device_id, double temperature, double target_temperature, bool is_active, const std::string& mode);
-    // Vrátí historii měření pro zařízení v časovém intervalu (od, do)
+    // New power measurement methods
+    bool save_power_measurement(uint32_t device_id, float power_watts);
+    std::vector<std::tuple<std::string, uint32_t, float>> get_power_measurements(uint32_t device_id, const std::string& from, const std::string& to);
+    std::vector<std::tuple<std::string, uint32_t, float>> get_recent_power_measurements(int hours = 24);
+    // Legacy methods
     std::vector<std::tuple<std::string, double, double, bool, std::string>> get_measurements(int device_id, const std::string& from, const std::string& to);
-    // Vrátí seznam zařízení (id, name)
     std::vector<std::pair<int, std::string>> get_devices();
 private:
     std::string conninfo_;
