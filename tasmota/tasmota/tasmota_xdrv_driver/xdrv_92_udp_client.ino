@@ -58,7 +58,7 @@ struct UDP_CLIENT_DATA {
   String  server_ip;                               // Server IP address
   bool    connected_to_server;                     // Connection status
   uint32_t sequence;                               // Message sequence number
-  uint8_t device_id;                               // Device ID
+  uint32_t device_id;                              // Device ID (now 32-bit for ESP Chip ID)
 };
 
 UDP_CLIENT_DATA UdpClient;
@@ -82,12 +82,15 @@ void UdpClientInit(void) {
   UdpClient.initialized = false;
   UdpClient.connected_to_server = false;
   UdpClient.sequence = 1;
-  UdpClient.device_id = random(1, 255);  // Generate random device ID (1-254)
+  // Use ESP Chip ID as unique device identifier (persistent across reboots)
+  UdpClient.device_id = ESP.getChipId();  // Use full 32-bit Chip ID
+  
+  AddLog(LOG_LEVEL_INFO, PSTR("UDP: Using Chip ID as Device ID: 0x%08X"), UdpClient.device_id);
   UdpClient.server_ip = "";
   
   if (UdpClient.udp.begin(UDP_CLIENT_PORT)) {
     UdpClient.initialized = true;
-    AddLog(LOG_LEVEL_INFO, PSTR("UDP: Client started on port %d, Device ID: %d"), UDP_CLIENT_PORT, UdpClient.device_id);
+    AddLog(LOG_LEVEL_INFO, PSTR("UDP: Client started on port %d, Device ID: 0x%08X"), UDP_CLIENT_PORT, UdpClient.device_id);
     
     // Start broadcasting immediately
     UdpClientSendBroadcast();
