@@ -32,11 +32,11 @@
 
 // Message types
 #define CONNECT            1
-#define CONFIRM            2
+#define CONFIRM            4
+#define POWER_MEASUREMENT              8
 
-// Device states
-#define FSM_START          0
-#define FSM_CONNECTED      1
+// Device types  
+#define DEV_TYPE_POWER_METER 1
 
 /*********************************************************************************************\
  * Data structures
@@ -45,8 +45,10 @@
 struct Message {
   uint8_t type;
   uint8_t id;
-  uint32_t seq;
+  uint8_t seq;
   int32_t data;
+  uint32_t padding;
+  uint8_t padding1;
 };
 
 struct UDP_CLIENT_DATA {
@@ -69,6 +71,7 @@ void UdpClientInit(void);
 void UdpClientLoop(void);
 void UdpClientHandlePacket(void);
 void UdpClientSendBroadcast(void);
+void UdpClientSendPowerData(void);
 void UdpClientProcessMessage(Message *msg);
 
 /*********************************************************************************************\
@@ -129,10 +132,18 @@ void UdpClientHandlePacket(void) {
 
 void UdpClientProcessMessage(Message *msg) {
   switch (msg->type) {
+    case CONNECT:
+      AddLog(LOG_LEVEL_INFO, PSTR("UDP: Server hello received, sending broadcast response"));
+      UdpClientSendBroadcast();
+      break;
     case CONFIRM:
       UdpClient.connected_to_server = true;
       UdpClient.server_ip = UdpClient.udp.remoteIP().toString();
       AddLog(LOG_LEVEL_INFO, PSTR("UDP: Connected to server %s"), UdpClient.server_ip.c_str());
+      break;
+    case POWER_MEASUREMENT:
+      AddLog(LOG_LEVEL_INFO, PSTR("UDP: Power request received, sending power data"));
+      UdpClientSendPowerData();
       break;
     default:
       AddLog(LOG_LEVEL_DEBUG, PSTR("UDP: Unknown message type %d"), msg->type);
@@ -145,13 +156,44 @@ void UdpClientSendBroadcast(void) {
   msg.type = CONNECT;
   msg.id = UdpClient.device_id;
   msg.seq = UdpClient.sequence++;
-  msg.data = 0;
+  msg.data = DEV_TYPE_POWER_METER;
+  msg.padding = 0;
+  msg.padding1 = 0;
   
   UdpClient.udp.beginPacket(UDP_BROADCAST_IP, UDP_SERVER_PORT);
   UdpClient.udp.write((uint8_t*)&msg, sizeof(msg));
   UdpClient.udp.endPacket();
   
   AddLog(LOG_LEVEL_DEBUG, PSTR("UDP: Broadcast CONNECT sent (seq:%d)"), msg.seq);
+}
+
+void UdpClientSendPowerData(void) {
+  Message msg;
+  msg.type = POWER_MEASUREMENT;
+  msg.id = UdpClient.device_id;
+  msg.seq = UdpClient.sequence++;
+  msg.data = 0;
+  msg.padding = 0;
+  msg.padding1 = 0;
+  
+#ifdef USE_ENERGY_SENSOR
+  // Get current power consumption and convert to int (W * 100 for 2 decimal places)
+  msg.data = (int32_t)(Energy->active_power[0] * 100);
+  AddLog(LOG_LEVEL_INFO, PSTR("UDP: Sending power data: %.2fW"), Energy->active_power[0]);
+#else
+  // No energy sensor available
+  msg.data = -1;
+  AddLog(LOG_LEVEL_INFO, PSTR("UDP: No energy sensor available, sending 0W"));
+#endif
+  
+  // Send to server (not broadcast)
+  if (!UdpClient.server_ip.isEmpty()) {
+    UdpClient.udp.beginPacket(UdpClient.server_ip.c_str(), UDP_SERVER_PORT);
+    UdpClient.udp.write((uint8_t*)&msg, sizeof(msg));
+    UdpClient.udp.endPacket();
+    
+    AddLog(LOG_LEVEL_DEBUG, PSTR("UDP: Power data sent to server %s (seq:%d)"), UdpClient.server_ip.c_str(), msg.seq);
+  }
 }
 
 /*********************************************************************************************\
